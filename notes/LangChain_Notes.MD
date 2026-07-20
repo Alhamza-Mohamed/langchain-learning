@@ -24,6 +24,11 @@
   - [Lesson 1: Models \& chat models](#lesson-1-models--chat-models)
     - [First LangChain chat model](#first-langchain-chat-model)
     - [Messages](#messages)
+  - [Lesson 2: Prompt templates](#lesson-2-prompt-templates)
+    - [Why prompt templates exist?](#why-prompt-templates-exist)
+    - [Prompt vs prompt template](#prompt-vs-prompt-template)
+    - [Chat prompt template](#chat-prompt-template)
+    - [MessagesPlaceholder](#messagesplaceholder)
 
 ## Lesson 1: Models & chat models
 
@@ -215,3 +220,284 @@ This is how modern LLM applications work.
 - Keep configuration in `.env`.
 - Separate Python, LangChain, and provider responsibilities.
 - Build applications around conversations, not strings.  
+
+## Lesson 2: Prompt templates
+
+The goal of this lesson is to learn how LangChain separates prompt construction from model invocation by using reusable prompt templates instead of manually creating message.  
+
+---
+
+### Why prompt templates exist?
+
+Without prompt templates:
+
+```Python
+message = [
+  SystemMessage(
+    content="You are a python instructor."
+  ),
+  HumanMessage(
+    content="Explain decorators."
+  ),
+]
+```
+
+Every new request requires rebuilding the conversation manually.  
+
+Prompt templates separate the conversation structure and variable values.  
+
+---
+
+### Prompt vs prompt template
+
+Prompt: it is the final conversation sent to the LLM.  
+
+Example:
+
+```text
+System:
+You are a Python instructor.
+
+Human:
+Explain decorators.
+```
+
+Prompt template: it is a blueprint that contain placeholders.  
+
+Example:
+
+```text
+System:
+You are a Python instructor.
+
+Human:
+Explain {topic}.
+```
+
+The placeholders are replaced later when rendering the template.  
+
+---
+
+### Chat prompt template  
+
+Create a reusable conversation template
+
+```Python
+from langchain_core.prompts import ChatPromptTemplate
+
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", "You are a senior Python instructor."),
+        ("human", "Explain {topic}."),
+    ]
+)
+
+```
+
+---
+
+**Ownership**  
+
+Python
+
+- Variables.
+- Dictionaries.
+- Imports.
+
+LangChain
+
+- ChatPromptTemplate.
+- Prompt rendering.
+- Variable validation.
+
+Gemini  
+Nothing. Gemini only receives the final rendered conversation.  
+
+---
+
+**Rendering a prompt**  
+A template is converted into a real conversation using:
+
+```Python
+prompt_value = prompt.invoke(
+  {
+    "topic": "decorators",
+  }
+)
+```
+
+This does NOT call the LLM. It only replace the placeholders.
+
+**ChatPromptValue**  
+
+Rendering returns `ChatPromptValue` Not" (String, list or HumanMessage).  
+It is another LangChain object representing a completed prompt.  
+
+The contained message can be inspected using `prompt_value.messages`.  
+
+---
+
+**Prompt pipeline**  
+
+```text
+ChatPromptTemplate
+  ↓
+invoke()
+  ↓
+ChatPromptValue
+  ↓
+LLM
+  ↓
+AIMessage
+```
+
+Prompt construction and model inference are separate steps.  
+
+---
+
+**Multiple variables**  
+
+Templates can contain multiple placeholders.
+
+```Python
+("human", "Explain {topic} for a {level}.")
+```
+
+Rendering:
+
+```Python
+prompt.invoke(
+    {
+        "topic": "decorators",
+        "level": "beginner",
+    }
+)
+```
+
+LangChain validates required variable before rendering (**Variable validation**).  
+
+Missing variable:
+
+```Python
+{
+    "topic": "decorators"
+}
+```
+
+Raises an error because `{level}` is missing.  
+
+Extra variables:
+
+```Python
+{
+    "topic": "decorators",
+    "level": "beginner",
+    "language": "English",
+}
+```
+
+Succeeds, unused variables are ignored.  
+
+---
+
+**Input_variables**  
+
+Every templates stores the variables it expects.
+
+```Python
+print(prompt.input_variables)
+```
+
+Example: `['topic', 'level']`  
+
+These variables are determined when the template is created, not every time `invoke()` is called.
+
+---
+
+**Why a Dictionary?**  
+
+LangChain uses dictionary in rendering prompts instead of just direct strings.  
+The benefits:
+
+- Self-documenting
+- Order-independent
+- Easier validation
+- Consistent with the rest of LangChain pipelines
+
+---
+
+### MessagesPlaceholder
+
+The problem is A normal placeholder can replace only one string.  
+It cannot replace an entire conversation.  
+
+The solution is LangChain MessagesPlaceholder.  
+
+```Python
+from langchain_core.prompts import MessagesPlaceholder
+
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", "You are a helpful assistant."),
+        MessagesPlaceholder("history"),
+        ("human", "{question}"),
+    ]
+)
+```  
+
+---
+
+**Conversation history**  
+
+History is a list of messages.
+
+```Python
+history = [
+    HumanMessage(
+        content="What is LangChain?"
+    ),
+    AIMessage(
+        content="LangChain is a framework..."
+    ),
+]
+```  
+
+Rendering:
+
+```Python
+prompt.invoke(
+    {
+        "history": history,
+        "question": "Can you explain it more simply?",
+    }
+)
+```  
+
+This produces the final prompt that sent to the model, which is a sequence of message objects:
+
+```text
+System
+  ↓
+Human
+  ↓
+ AI
+  ↓
+Human
+```
+
+---
+
+**Why we don't use one big string?**  
+
+Instead of using using:
+
+```Python
+history = """
+Human...
+AI...
+Human...
+"""
+```
+
+LangChain uses message objects because they preserve roles, conversation order and message structure.  
+This is why lesson 1 focused on `HumanMessage`, `AIMessage`, and `SystemMessage`.  
