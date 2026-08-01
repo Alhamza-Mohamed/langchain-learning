@@ -29,6 +29,11 @@
     - [Prompt vs prompt template](#prompt-vs-prompt-template)
     - [Chat prompt template](#chat-prompt-template)
     - [MessagesPlaceholder](#messagesplaceholder)
+  - [Lesson 3: Output parsers](#lesson-3-output-parsers)
+    - [Why Output parsers exist?](#why-output-parsers-exist)
+    - [Parsing Lifecycle](#parsing-lifecycle)
+    - [StrOutputParser](#stroutputparser)
+    - [JsonOutputParser](#jsonoutputparser)
 
 ## Lesson 1: Models & chat models
 
@@ -501,3 +506,128 @@ Human...
 
 LangChain uses message objects because they preserve roles, conversation order and message structure.  
 This is why lesson 1 focused on `HumanMessage`, `AIMessage`, and `SystemMessage`.  
+
+## Lesson 3: Output parsers
+
+Output parsers are LangChain runnables that transform the output of an LLM into a more useful python object.  
+They also provide formatting instructions to guide the LLM toward producing outputs that can be successfully parsed.
+
+### Why Output parsers exist?
+
+LLMs naturally generate free-form text.  
+Applications usually require structured data.
+
+Instead of manually parsing responses in every application, LangChain provides reusable Output parsers.  
+
+### Parsing Lifecycle
+
+```text
+Prompt
+    │
+    ▼
+Output Parser
+(get_format_instructions())
+    │
+    ▼
+   LLM
+    │
+    ▼
+AIMessage
+    │
+    ▼
+Output Parser
+(parse/invoke)
+    │
+    ▼
+Python Object
+```
+
+The parser participates  both **before** and **after** the LLM.
+
+---
+
+### StrOutputParser
+
+Its purpose is to return the model output as plain text.
+
+- Input: AIMessage.
+- Output: TextAccessor (in  the current LangChain version).
+
+**When to use StrOutputParser:**  
+
+- Chat applications.
+- Content generation.
+- Summaries.
+- Explanations.
+- Human-readable responses.
+
+Limitation: produces unstructured text that is difficult for backend code to consume.  
+
+---
+
+### JsonOutputParser
+
+Its purpose is to converts the LLM output into a python dictionary.
+
+- Input: AIMessage containing valid JSON text.
+- Output: `dict`.  
+
+`get_format_instructions()` provides prompt instructions that encourage the LLM to produce valid JSON.  
+
+Example: 
+
+```text
+Return a JSON object.
+```
+
+Important observation: 
+
+- The parser does not force the model to return JSON.  
+- It only provides instructions before generation.  
+- After generation it attempts to parse the response.  
+- If parsing fails, an exception is raised.  
+- JsonOutputParser parse and validate valid JSON not valid schema.
+
+**Valid JSON**  
+
+Correct JSON syntax.
+
+Example:
+
+```json
+{
+  "country": "Egypt"
+}
+```
+
+**Valid schema**  
+
+JSON that follows a predefined structure.  
+
+Example:
+
+```json
+{
+  "country": "...",
+  "capital": "...",
+  "population": ...
+}
+```
+
+A response may be valid JSON while still violating the expected schema.  
+
+**When to use JsonOutputParser:**  
+
+- Backend services.
+- APIs.
+- Automation.
+- Data extraction.
+- Pipelines.
+- Intermediate processing.
+
+**Common mistakes:**  
+
+- Forgetting `get_format_instructions()`.
+- Assuming valid JSON means the expected keys exist.
+- Treating AIMessage as a dictionary.
+- Expecting Output parsers to change the model's reasoning.  
