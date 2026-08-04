@@ -34,6 +34,17 @@
     - [Parsing Lifecycle](#parsing-lifecycle)
     - [StrOutputParser](#stroutputparser)
     - [JsonOutputParser](#jsonoutputparser)
+  - [Lesson 4: Structured output with pydantic](#lesson-4-structured-output-with-pydantic)
+    - [LangChain + pydantic flow](#langchain--pydantic-flow)
+    - [BaseModel](#basemodel)
+    - [JSON vs python dictionary](#json-vs-python-dictionary)
+    - [Validation](#validation)
+    - [Field](#field)
+    - [PydanticOutputParser](#pydanticoutputparser)
+    - [get\_format\_instructions()](#get_format_instructions)
+    - [JsonOutputParser vs PydanticOutputParser](#jsonoutputparser-vs-pydanticoutputparser)
+    - [Choosing the right parser](#choosing-the-right-parser)
+    - [Key Takeaways](#key-takeaways)
 
 ## Lesson 1: Models & chat models
 
@@ -631,3 +642,212 @@ A response may be valid JSON while still violating the expected schema.
 - Assuming valid JSON means the expected keys exist.
 - Treating AIMessage as a dictionary.
 - Expecting Output parsers to change the model's reasoning.  
+
+## Lesson 4: Structured output with pydantic
+
+Pydantic is a python library used to define, validate, and mange structured data.  
+Instead of manually checking every field in a dictionary, we define teh expected structure once using a class.  
+
+Without pydantic:
+
+```python
+if "name" is not in data:
+  ...
+
+```
+
+With pydantic:
+
+```python
+class Country(BaseModel):
+  name: str
+  capital: str
+
+```
+
+Pydantic handles the validation of the attributes automatically.
+
+### LangChain + pydantic flow
+
+```text
+BaseModel
+     │
+     ▼
+Pydantic generates JSON Schema
+     │
+     ▼
+PydanticOutputParser
+     │
+     ▼
+get_format_instructions()
+     │
+     ▼
+   Prompt
+     │
+     ▼
+    LLM
+     │
+     ▼
+    JSON
+     │
+     ▼
+Validation
+     │
+     ▼
+Pydantic Object
+```
+
+---
+
+### BaseModel
+
+`BaseModel` is the foundation of every pydantic model. It gives teh class the ability to:
+
+- Validate data.
+- Enforce data types.
+- Generate JSON Schema.
+- Serialize and deserialize data.
+- Integrate with frameworks such as FastAPI and LangChain.
+
+---
+
+### JSON vs python dictionary
+
+Python dictionary:
+
+```python
+{
+    "name": "Egypt"
+}
+```
+
+JSON:
+
+```json
+{
+    "name": "Egypt"
+}
+```
+
+They look very similar.
+
+The difference:
+
+- Dictionary → Python object in memory.
+- JSON → Text used to exchange data which lives on the standard storage like hard drive.
+
+---
+
+### Validation
+
+Pydantic validates data while creating the object.
+
+Example:
+
+```python
+
+class Country(BaseModel):
+    name: str
+    capital: str
+
+Country(
+    name=123,
+    capital="Cairo"
+)
+```
+
+Result:
+
+```text
+ValidationError
+```
+If validation fails, the object is never created. This is called **Fail fast**  
+
+### Field
+
+`Field()` provides additional metadata for a field.  
+
+```python
+from pydantic import Field
+
+class country(BaseModel):
+  name: str = Field(
+    description = "The common name of the country."
+  )
+```
+
+The description is not mainly for python. It becomes part of teh generated schema used by LangChain.  
+
+### PydanticOutputParser
+
+```python
+from langchain_core.output_parsers import PydanticOutputParser
+
+parser = PydanticOutputParser(
+  pydantic_object = Country
+)
+```
+
+unlike `JsonOutputParser`, this parser returns a pydantic object instead of dictionary.  
+
+### get_format_instructions()
+
+```python
+parser.get_format_instructions()
+```
+
+Unlike `JsonOutputParser`, it generates a complete JSON schema containing:
+
+- Model description.
+- Field names.
+- Field types.
+- Required fields.
+- Field descriptions.
+
+This schema is inserted into the prompt to guide the LLM.
+
+---
+
+### JsonOutputParser vs PydanticOutputParser
+
+**JsonOutputParser:**  
+
+- Returns a python dictionary.
+- Guarantees valid JSON.
+- Does not validate the schema.
+- Good for flexible structures.
+
+**PydanticOutputParser:**
+
+- Returns a pydantic object.
+- Guarantees valid JSON.
+- Validates against the schema.
+- Raises `ValidationError` when data is invalid.
+- Best for production systems.
+
+### Choosing the right parser
+
+Use `StrOutputParser` when:
+
+- You only need plain text.
+
+Use `JsonOutputParser` when:
+
+- You need JSON.
+- The structure is flexible or unknown.
+
+Use `PydanticOutputParser` when:
+
+- The backend expects a fixed schema.
+- Validation is required.
+- The output will be consumed programmatically.
+
+### Key Takeaways
+
+- `BaseModel` defines the expected data structure.
+- `Field()` adds metadata that becomes part of the generated JSON Schema.
+- `PydanticOutputParser` automatically converts LLM output into validated Python objects.
+- Validation occurs after the LLM generates its response.
+- Nested Pydantic models allow complex structured outputs.
+- Use `JsonOutputParser` for flexible JSON.
+- Use `PydanticOutputParser` for production-ready structured data.
