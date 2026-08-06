@@ -45,6 +45,19 @@
     - [JsonOutputParser vs PydanticOutputParser](#jsonoutputparser-vs-pydanticoutputparser)
     - [Choosing the right parser](#choosing-the-right-parser)
     - [Key Takeaways](#key-takeaways)
+  - [Lesson 5: LCEL (LangChain Expression Language)](#lesson-5-lcel-langchain-expression-language)
+    - [Why LCEL exists?](#why-lcel-exists)
+    - [Runnable](#runnable)
+    - [Runnable sequence](#runnable-sequence)
+    - [The pipe operator (`|`)](#the-pipe-operator-)
+    - [invoke()](#invoke)
+    - [batch()](#batch)
+    - [stream()](#stream)
+    - [ainvoke()](#ainvoke)
+      - [Running `ainvoke()`](#running-ainvoke)
+    - [Sync vs Async](#sync-vs-async)
+    - [Production perspective](#production-perspective)
+    - [Key takeaways](#key-takeaways-1)
 
 ## Lesson 1: Models & chat models
 
@@ -851,3 +864,222 @@ Use `PydanticOutputParser` when:
 - Nested Pydantic models allow complex structured outputs.
 - Use `JsonOutputParser` for flexible JSON.
 - Use `PydanticOutputParser` for production-ready structured data.
+
+## Lesson 5: LCEL (LangChain Expression Language)
+
+LCEL (LangChain expression language) is LangChain's standard way of composing multiple runnables into single execution pipeline.  
+
+Instead of manually invoking each component on e after another:
+
+prompt -> LLM -> output parser  
+
+LCEL allows us to express the same pipeline declaratively. The pipeline itself becomes anther runnable.
+
+---
+
+### Why LCEL exists?
+
+Without LCEL, every step must be executed manually.  
+Conceptually:
+
+```text
+Prompt.invoke()
+    ↓
+LLM.invoke()
+    ↓
+Parser.invoke()
+```
+
+As pipelines become larger, this approach becomes repetitive, harder to read, harder to maintain, and easier to make mistakes.  
+
+LCEL removes the orchestration code while preserving exactly the same execution flow.  
+
+The workflow does not changes.  
+
+Only who performs the orchestration changes.  
+
+Before:
+> The developer orchestrate the pipeline.  
+
+After:
+> LangChain orchestrates the pipeline.
+
+---
+
+### Runnable
+
+Any object that flows LangChain's standard execution interface.
+
+Examples include:
+
+- `ChatPromptTemplate`
+- `ChatGoogleGenerativeAI`
+- `StrOutputParser`
+- `JsonOutputParser`
+- `PydanticOutputParser`
+- `RunnableSequence`
+
+Because they all implement the same interface, they can connected together regardless of their internal implementation.  
+
+This is one of the fundamental design ideas behind LangChain.  
+
+### Runnable sequence
+
+When multiple Runnables are connected using LCEL, LangChain creates a `RunnableSequence`.  
+
+Conceptually prompt -> LLM -> parser becomes RunnableSequence. The sequence behaves exactly like any other runnable. It means is also supports:  
+
+- `invoke()`
+- `batch()`
+- `stream()`
+- `ainvoke`
+
+So when you create a RunnableSequence called `chain` you can do runtime verification using:  
+`type(chain)`
+> langchain_core.runnables.base.RunnableSequence
+
+---
+
+### The pipe operator (`|`)
+
+The pipe operator connects runnables together.
+
+using:
+
+```python
+chain = prompt | llm | pydantic_parser
+```
+
+Conceptually: prompt -> LLM -> parser  
+
+Each runnable automatically receives the output of the previous runnable. Nothing  is executed when the pipeline is built.  
+Execution begins only when one of the execution methods is called.  
+
+---
+
+### invoke()
+
+Process a single input synchronously.
+
+Input: one input.  
+output: one output.
+
+Returns whatever the last runnables returns.
+
+Examples:
+
+- `AImessage`
+- `TextAccessor`
+- `dict`
+- `student`
+- Any custom pydantic model
+
+### batch()
+
+Processes multiple independent inputs.
+
+Input: List[input]  
+Output: List[output]  
+
+Conceptually: 
+
+```text
+invoke()
+  ↓
+Output
+
+becomes
+
+batch()
+  ↓
+List[Output]
+```
+
+Internally, LangChain may execute requests concurrently depending on the runnable implementation.  
+
+### stream()
+
+Returns the output incrementally instead of waiting for the complete response.  
+
+Conceptually:  
+Instead of wait then complete response the user receives chunk -> chunk -> chunk.  
+Streaming improves the perceived responsiveness of AI applications.  
+
+Runtime observation (our environment):
+
+- Each streamed chunk is a `TextAccessor`.
+- Gemini streams text chunks rather than exposing individual tokens directly.
+
+### ainvoke()
+
+Asynchronous version of invoke()
+
+Conceptually:  
+
+`chain.invoke(...)` becomes await `chain.ainvoke(...)`  
+The returned object is identical to invoke, only the execution strategy changes.  
+
+#### Running `ainvoke()`  
+
+**In Jupyter Notebook:**
+
+```python
+result = await chain.ainvoke(...)
+```
+
+**In a normal python script:**
+
+```python
+import asyncio 
+result = asyncio.run(main())
+```
+
+where `main()` is an `async` def function.
+
+---
+
+### Sync vs Async
+
+Async does not make the LLM faster. 
+
+Instead, it allows your application to continue doing useful work while waiting for external services.
+
+Example:
+
+FastAPI sends a request to Gemini.  
+While Gemini is generating a response:
+
+- another HTTP request can be processed,
+- another database query can run,
+- another user can be served.
+
+The application becomes more efficient because waiting time is no longer wasted.
+
+I.e.
+> Async does not make external services faster; it makes your application more efficient while waiting for them.
+
+---
+
+### Production perspective
+
+LCEL is the standard way production LangChain applications are built.
+
+Typical use cases:
+
+- `invoke()` → Single user requests.
+- `batch()` → Offline processing and bulk inference.
+- `stream()` → Chatbots and real-time AI interfaces.
+- `ainvoke()` → FastAPI and other asynchronous web frameworks.
+
+Almost every production AI application combines these execution methods depending on the workload.
+
+### Key takeaways
+
+- LCEL is LangChain's  execution language.
+- Every major LangChain component is a runnable.
+- Multiple runnables compose into a RunnableSequence.
+- RunnableSequence is itself a runnable.
+- LCEL changes execution, not architecture.
+- The pipeline always returns the output of its last runnable.
+- Different execution methods exist fro different application requirements.
+- Async improves application scalability, not model speed.
