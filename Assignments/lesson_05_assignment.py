@@ -42,7 +42,7 @@ print(invoked_result)
 # Get the batched result 
 batched_results = chain.batch(
     [
-        {"question": "What is LangChain?"}, # Note for chat gpt, I only asked 2 questions bec of the free gemini quote.
+        {"question": "What is LangChain?"},
         {"question": "What is FastAPI?"},
     ]
 )
