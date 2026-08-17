@@ -56,8 +56,26 @@
     - [ainvoke()](#ainvoke)
       - [Running `ainvoke()`](#running-ainvoke)
     - [Sync vs Async](#sync-vs-async)
-    - [Production perspective](#production-perspective)
-    - [Key takeaways](#key-takeaways-1)
+    - [Production perspective: LCEL](#production-perspective-lcel)
+    - [Key takeaways: LCEL](#key-takeaways-lcel)
+  - [Lesson 6: Runnables](#lesson-6-runnables)
+    - [Why Runnables exist?](#why-runnables-exist)
+    - [The runnable interface](#the-runnable-interface)
+    - [Composition](#composition)
+    - [RunnableLambda](#runnablelambda)
+      - [Input and Output](#input-and-output)
+    - [RunnablePassthrough](#runnablepassthrough)
+    - [RunnableParallel](#runnableparallel)
+    - [RunnableSequence](#runnablesequence)
+      - [RunnableSequence is also a Runnable](#runnablesequence-is-also-a-runnable)
+    - [Building a RAG-shaped pipeline](#building-a-rag-shaped-pipeline)
+    - [Composition vs Execution](#composition-vs-execution)
+    - [Production perspective: Runnables](#production-perspective-runnables)
+    - [Key Takeaways \& Engineering Practices: Runnables](#key-takeaways--engineering-practices-runnables)
+      - [Key takeaways: Runnables](#key-takeaways-runnables)
+      - [Common mistake: Runnables](#common-mistake-runnables)
+      - [Best practice: Runnables](#best-practice-runnables)
+    - [Personal observations](#personal-observations)
 
 ## Lesson 1: Models & chat models
 
@@ -598,13 +616,13 @@ Its purpose is to converts the LLM output into a python dictionary.
 
 `get_format_instructions()` provides prompt instructions that encourage the LLM to produce valid JSON.  
 
-Example: 
+Example:  
 
 ```text
 Return a JSON object.
 ```
 
-Important observation: 
+Important observation:  
 
 - The parser does not force the model to return JSON.  
 - It only provides instructions before generation.  
@@ -774,6 +792,7 @@ Result:
 ```text
 ValidationError
 ```
+
 If validation fails, the object is never created. This is called **Fail fast**  
 
 ### Field
@@ -981,7 +1000,7 @@ Processes multiple independent inputs.
 Input: List[input]  
 Output: List[output]  
 
-Conceptually: 
+Conceptually:  
 
 ```text
 invoke()
@@ -1040,7 +1059,7 @@ where `main()` is an `async` def function.
 
 ### Sync vs Async
 
-Async does not make the LLM faster. 
+Async does not make the LLM faster.  
 
 Instead, it allows your application to continue doing useful work while waiting for external services.
 
@@ -1060,7 +1079,7 @@ I.e.
 
 ---
 
-### Production perspective
+### Production perspective: LCEL
 
 LCEL is the standard way production LangChain applications are built.
 
@@ -1073,7 +1092,7 @@ Typical use cases:
 
 Almost every production AI application combines these execution methods depending on the workload.
 
-### Key takeaways
+### Key takeaways: LCEL
 
 - LCEL is LangChain's  execution language.
 - Every major LangChain component is a runnable.
@@ -1083,3 +1102,484 @@ Almost every production AI application combines these execution methods dependin
 - The pipeline always returns the output of its last runnable.
 - Different execution methods exist fro different application requirements.
 - Async improves application scalability, not model speed.
+
+## Lesson 6: Runnables
+
+A Runnable is a LangChain abstraction representing a unit of computation that follows a common execution interface.
+
+Runnables can represent many different things:
+
+- Prompt templates.
+- LLMs.
+- Output parsers.
+- Python functions.
+- Parallel branches.
+- Complete chains.
+
+The important idea is that different concrete classes can follow the same Runnable interface.  
+This allows LangChain to treat them uniformly.  
+
+The common execution interface includes methods such as:
+
+- `invoke()`
+- `batch()`
+- `stream()`
+- `ainvoke()`
+
+The exact output depends on what the Runnable does.
+
+### Why Runnables exist?
+
+Without a common abstraction, every LangChain component could have completely different ways of being executed and composed.  
+
+For example:
+
+```text
+Prompt → some prompt-specific API
+
+LLM → some LLM-specific API
+
+Parser → some parser-specific API
+```
+
+This would make composition difficult.
+
+Runnables provide a common contract:
+
+```text
+Different concrete components
+          ↓
+    Runnable interface
+          ↓
+Can be composed and executed uniformly
+```
+
+This allows LangChain to build larger systems from smaller components.
+
+---
+
+### The runnable interface
+
+A prompt, LLM, parser, and RUnnable sequence are different concrete types.  
+They are not all literally the same python class.  
+Instead, they conform to the Runnable abstraction.
+This distinction is very important:
+
+```text
+Concrete type ≠ Interface
+```
+
+For example:
+
+```text
+ChatPromptTemplate
+ChatGoogleGenerativeAI
+StrOutputParser
+RunnableLambda
+RunnableParallel
+RunnableSequence
+```
+
+Can all participate in the Runnable ecosystem.  
+The caller does not need to know their internal implementation in order to execute them through the common interface.
+
+---
+
+### Composition
+
+A major benefit of the Runnable abstraction is the composition.  
+A Runnable can be combined with another Runnable:
+
+```text
+Runnable A
+    ↓
+Runnable B
+    ↓
+Runnable C
+```
+
+The output of one Runnable becomes the input of the next.
+
+For example:
+
+```text
+Prompt
+  ↓
+LLM
+  ↓
+Parser
+```
+
+can be composed using LCEL:
+
+```python
+chain = prompt | llm | parser
+```
+
+The resulting object is a `RUnnableSequence` which is a Runnable itself.  
+Therefore, an entire pipeline can be treated as one component and composed into a larger pipeline. This allows a chain of small Runnables to create Runnable sequence.  
+
+This is the basis of reusable and modular pipelines.
+
+---
+
+### RunnableLambda
+
+`RunnableLambda` adapts an ordinary python callable into a Runnable.
+
+For example:
+
+```python
+def double(x):
+    return x * 2
+```
+
+is an ordinary Python function.
+
+Wrapping it:
+
+```python
+double_runnable = RunnableLambda(double)
+```
+
+turns it into a Runnable.
+
+It can now participate in LCEL:
+
+```python
+Python function
+      ↓
+RunnableLambda
+      ↓
+Runnable
+      ↓
+LCEL pipeline
+```
+
+The function behavior does not change. The wrapper gives it the Runnable interface.
+
+This is useful as it allows application-specific python logic to be inserted into LangChain pipelines without creating a custom Runnable class for every small operation,
+
+Examples include:
+
+- Cleaning text.
+- Formatting data.
+- Extracting information from objects.
+- Transforming model output.
+- APPlying custom business logic.
+
+#### Input and Output
+
+`RunnableLambda` does not impose a particular input or output type.  
+The wrapped function determine them.  
+Example:
+
+`dict → str` or, `int → int` or, `Pydantic object → str`.
+
+The only requirement for composition is that  the output of the previous Runnable is compatible with the function's expected input.
+
+### RunnablePassthrough
+
+`RunnablePassthrough` receives an input and returns that same input unchanged.
+
+Conceptually:
+
+```text
+Input
+  ↓
+RunnablePassthrough
+  ↓
+Same Input
+```
+
+The input remains the same in the same format after passing through the Runnable.
+
+It is usefulness becomes apparent when data needs to be preserved while other branches process the same input.
+
+For example:
+
+```text
+                 ┌──→ original question
+Input ───────────┤
+                 └──→ retriever → context
+```
+
+The original question can be preserved while another Runnable process it.
+
+This makes `RunnablePassthrough` especially useful in RAG-style pipelines.
+
+### RunnableParallel
+
+`RunnableParallel` sends the same input through multiple Runnable branches.
+
+Conceptually:
+
+```text
+                 ┌──→ Runnable A
+Input ───────────┤
+                 └──→ Runnable B
+```
+
+The results are combined into a dictionary.
+
+For example:
+
+```text
+Input: 5
+
+        ┌──→ Passthrough → 5
+        │
+        ├──→ double → 10
+        │
+        └──→ add_ten → 15
+
+Result:
+{
+    "original": 5,
+    "doubled": 10,
+    "plus_ten": 15
+}
+```
+
+**Important distinction**  
+RunnableParallel means that multiple Runnable branches receive input.  
+It should not automatically be interpreted as python multiprocessing or CPU parallelism.  
+The concept here is primarily parallel data flow / branching.  
+The actual execution and concurrency behavior depends on the implementation and runtime.  
+
+### RunnableSequence
+
+`RunnableSequence` represents sequential composition.  
+
+For example: `A -> B -> C`  
+
+When we write:
+
+```python
+chain = prompt | llm | parser
+```
+
+LangChain creates a `RunnableSequence`.  
+When the sequence is executed:
+
+```python
+chain.invoke(...)
+```
+
+The data flows through the Runnables in order:
+
+```text
+Input
+  ↓
+prompt.invoke()
+  ↓
+PromptValue
+  ↓
+llm.invoke()
+  ↓
+AIMessage
+  ↓
+parser.invoke()
+  ↓
+Final result
+```
+
+The intermediate steps are orchestrated automatically.  
+The developer does not need to manually invoke every Runnable.  
+
+#### RunnableSequence is also a Runnable
+
+This is one of the most important concepts of the lesson.  
+A sequence can itself be used as a Runnable:
+
+```text
+Runnable A
+   ↓
+Runnable B
+   ↓
+RunnableSequence
+   ↓
+Another Runnable
+```
+
+Therefore, smaller pipelines can be composed into larger pipelines.  
+This provides modularity and reusability.
+
+---
+
+### Building a RAG-shaped pipeline
+
+The notebook demonstrated how these Runnables types can be combined into a simplified RAG-shaped pipeline.  
+
+The architecture is:
+
+```text
+                    ┌──→ question ───────────┐
+User Question ──────┤                         ↓
+                    └──→ Retriever → context → Prompt
+                                                  ↓
+                                                 LLM
+                                                  ↓
+                                                Parser
+                                                  ↓
+                                               Answer
+```
+
+The data-preparation stage can use:
+
+```text
+RunnablePassthrough
+        +
+RunnableLambda / Retriever
+        ↓
+RunnableParallel
+```
+
+Which produces:  
+
+```text
+{
+    "question": ...,
+    "context": ...
+}
+```
+
+That output can then be passed into a `ChatPromptTemplate`.  
+The prompt produces a `ChatPromptValue`, which can be passed to the LLM.  
+The LLM produces an `AIMessage`, which can then be passed to an output parser.  
+The final result is therefore a composition of several different Runnables.  
+
+The important lesson is not the fake retriever used in the notebook but the important architectural pattern is:  
+
+```text
+Prepare data
+     ↓
+Build prompt
+     ↓
+Generate
+     ↓
+Parse
+```
+
+Each stage can be independently replaced or extended because each stage follows the Runnable abstraction.
+
+---
+
+### Composition vs Execution
+
+This distinction is critical.  
+The pipe operator:
+
+```python
+chain = prompt | llm | parser
+```
+
+composes Runnables. It does not execute them.  
+No request is sent to the LLM simply because the chain was created.  
+Execution happens only when an execution method is called as `chain.invoke(...)` or `chain.batch(...)`  or `chain.stream(...)`  or `chain.ainvoke(...)`  
+
+Therefore, the pipe operator `|` is Composition while the Execution is done by the execution methods.  
+
+This distinction makes LCEL much easier to reason about
+
+### Production perspective: Runnables
+
+Runnables provide a modular way to construct real AI application pipelines.  
+A production pipeline might conceptually look like:
+
+```text
+User Input
+    ↓
+Input Validation
+    ↓
+Parallel Data Preparation
+    ↓
+Retriever
+    ↓
+Prompt Construction
+    ↓
+LLM
+    ↓
+Structured Output Parser
+    ↓
+Business Logic
+    ↓
+API Response
+```
+
+Each stage can be represented by a Runnable.  
+This allows individual components to be:
+
+- Replaces.
+- Tested.
+- Reused.
+- Composed.
+- Extended.
+
+Runnables therefore provide an important architecture foundation for large LangChain applications.
+
+### Key Takeaways & Engineering Practices: Runnables
+
+#### Key takeaways: Runnables
+
+- A Runnable is a com0posable unit of computation with a common execution interface.
+- Different concrete classes can conform to the Runnable abstraction.
+- Runnables support common execution methods such as `invoke()`, `batch()`, `stream()`, and `ainvoke()`.
+- `RunnableLambda` adapts ordinary python functions into Runnables.
+- `RunnableLPassthrough` preserves an input unchanged.
+- `RunnableParallel` sends one input through multiple Runnables branches.
+- `RunnableSequence` executes Runnables sequentially.
+- A `RunnableSequence` is itself a Runnable.
+- Small Runnable can therefore be composed into lager Runnables.
+- The `|` operator composes Runnables; it does not execute them.
+- Input/output compatibility is required for meaningful composition.
+- The last Runnable determines the final output produced by the chain.
+
+#### Common mistake: Runnables
+
+- **Thinking all Runnables are the same class**: They are not, they can be different concrete classes while following the same Runnable abstraction.
+- **Thinking `|` executes the pipeline**: it doesn't. It creates a composition. Execution happens later through methods such as `invoke()`.
+- **Thinking Runnables means the pipeline will automatically work**: A component being a Runnable does not guarantee that its input is compatible with the previous component's output. Both the Runnable contract and compatible data flow matter.
+- **Thinking `RunnableParallel` means multiprocessing**: It primarily represents multiple branches receiving the same input. Do not confuse this abstraction with python's deeper concurrency and parallelism mechanisms.
+- **Thinking `RunnableLambda` changes the function**: It does'nt, it adapts the function to the Runnable interface.
+- **Thinking `stream()` always splits output into many chunks**: It doesn't, th chunking behavior depends on the Runnable. Our `RunnableLambda(double)` example returned `10` as a single chunk
+
+#### Best practice: Runnables
+
+- Keep Runnables focused on clear responsibility.
+- Build larger pipelines by composing smaller reusable components.
+- Inspect intermediate outputs when debugging complex chains.
+- Keep data structures between Runnables explicit and compatible.
+- Use `RunnableLambda` for small pieces of custom python logic.
+- Use `RunnableParallel` when multiple pieces of information need to be produced from the same input.
+- Avoid creating unnecessarily large monolithic chains.
+- Separate data preparation, generation, parsing, and business logic when possible.
+
+### Personal observations
+
+The mental model during the lesson:
+
+```text
+Runnable
+    ↓
+Composable unit
+    ↓
+Can be combined with other Runnables
+    ↓
+Can become a RunnableSequence
+    ↓
+The sequence is still a Runnable
+    ↓
+The sequence can be composed again
+```
+
+A particularly important realization was that a complete chain can be treated as black box:
+
+```text
+Input -> RunnableSequence -> output
+```
+
+The caller does not need to know how many RUnnables exist internally.  
+This makes it possible to build larger systems from smaller, reusable pipelines components.  
+
+The lesson 6 notebook also verified the behavior of `RunnableLambda`, `RunnablePassthrough`, `RunnableParallel`, and `RunnableSequence` using the installed LangChain version.
