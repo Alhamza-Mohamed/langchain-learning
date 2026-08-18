@@ -63,11 +63,9 @@
     - [The runnable interface](#the-runnable-interface)
     - [Composition](#composition)
     - [RunnableLambda](#runnablelambda)
-      - [Input and Output](#input-and-output)
     - [RunnablePassthrough](#runnablepassthrough)
     - [RunnableParallel](#runnableparallel)
     - [RunnableSequence](#runnablesequence)
-      - [RunnableSequence is also a Runnable](#runnablesequence-is-also-a-runnable)
     - [Building a RAG-shaped pipeline](#building-a-rag-shaped-pipeline)
     - [Composition vs Execution](#composition-vs-execution)
     - [Production perspective: Runnables](#production-perspective-runnables)
@@ -1268,7 +1266,7 @@ Examples include:
 - Transforming model output.
 - APPlying custom business logic.
 
-#### Input and Output
+**Input and Output**  
 
 `RunnableLambda` does not impose a particular input or output type.  
 The wrapped function determine them.  
@@ -1310,7 +1308,7 @@ This makes `RunnablePassthrough` especially useful in RAG-style pipelines.
 
 ### RunnableParallel
 
-`RunnableParallel` sends the same input through multiple Runnable branches.
+`RunnableParallel` sends the same input through multiple Runnable branches, and their output are combined into one result.
 
 Conceptually:
 
@@ -1387,7 +1385,7 @@ Final result
 The intermediate steps are orchestrated automatically.  
 The developer does not need to manually invoke every Runnable.  
 
-#### RunnableSequence is also a Runnable
+**RunnableSequence is also a Runnable**  
 
 This is one of the most important concepts of the lesson.  
 A sequence can itself be used as a Runnable:
