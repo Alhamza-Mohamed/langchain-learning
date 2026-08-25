@@ -74,6 +74,27 @@
       - [Common mistake: Runnables](#common-mistake-runnables)
       - [Best practice: Runnables](#best-practice-runnables)
     - [Personal observations](#personal-observations)
+  - [Lesson 7: Tools](#lesson-7-tools)
+    - [Why tools exist?](#why-tools-exist)
+    - [Tool call and Tool execution](#tool-call-and-tool-execution)
+    - [Tool fundamentals](#tool-fundamentals)
+      - [Tool definition](#tool-definition)
+      - [Tool schema](#tool-schema)
+      - [Pydantic and Enums](#pydantic-and-enums)
+    - [Tool interaction](#tool-interaction)
+      - [`bind_tools()`](#bind_tools)
+      - [Tool calls vs. content](#tool-calls-vs-content)
+      - [ToolMessage](#toolmessage)
+      - [Tool descriptions](#tool-descriptions)
+      - [Tool design as an interface](#tool-design-as-an-interface)
+    - [Tool architecture](#tool-architecture)
+      - [Production perspective](#production-perspective)
+      - [Tool vs RAG](#tool-vs-rag)
+      - [Deterministic workflow vs. agent](#deterministic-workflow-vs-agent)
+    - [Key Takeaways \& Engineering Practices: Tools](#key-takeaways--engineering-practices-tools)
+      - [Common mistakes: Tools](#common-mistakes-tools)
+      - [Best practices: Tools](#best-practices-tools)
+      - [Key takeaways](#key-takeaways-1)
 
 ## Lesson 1: Models & chat models
 
@@ -1581,3 +1602,454 @@ The caller does not need to know how many RUnnables exist internally.
 This makes it possible to build larger systems from smaller, reusable pipelines components.  
 
 The lesson 6 notebook also verified the behavior of `RunnableLambda`, `RunnablePassthrough`, `RunnableParallel`, and `RunnableSequence` using the installed LangChain version.
+
+## Lesson 7: Tools
+
+A LangChain Tool is a controlled application capability exposed to an LLM through a structured interface.
+
+A tool typically provides:
+
+- Name.
+- Description.
+- Input schema.
+- Execution logic.
+
+The LLM can decide to request a tool, but the tool is actually executed by the application/runtime.
+
+> A Tool is not simply "information given to the LLM." It is a capability the LLM can request the application to execute.
+
+### Why tools exist?
+
+An LLM cannot directly access arbitrary external systems or perform application operations.  
+Tools provide a controlled interface between the model and external capabilities such as:
+
+- Databases.
+- APIs.
+- Web search.
+- Calculations.
+- Filesystems.
+- Business systems.
+- Application actions.
+
+Without tools the user directly got the answer from the LLM (User → LLM → Answer).
+
+With tools the user ask the LLM to perform a task, if the LLM determines that a tool is needed it make a tool call, the application executes the requested tool then return the tool result back to the LLM, the LLM uses the tool result to generate the final answer.
+
+workflow:
+
+```text
+User
+ ↓
+LLM
+ ↓
+Tool call
+ ↓
+Application executes Tool
+ ↓
+Tool result
+ ↓
+LLM
+ ↓
+Final answer
+```
+
+---
+
+### Tool call and Tool execution
+
+**The tool call does not mean tool execution.**  
+
+Tool call is the models structured request:
+
+```python
+{
+    "name": "get_customer_field",
+    "args": {
+        "customer_id": 4821,
+        "field": "balance"
+    }
+}
+```
+
+Nothing has been executed yet.
+
+Tool execution happens when the application invokes the tool.
+
+```python
+get_customer_field.invoke({
+    "customer_id": 4821,
+    "field": "balance"
+})
+```
+
+The tool calling lifecycle:
+
+```text
+User
+ ↓
+Gemini
+ ↓
+AIMessage
+ └── tool_calls[]
+       ↓
+Application executes Tool
+       ↓
+Tool result
+       ↓
+ToolMessage
+       ↓
+Gemini
+ ↓
+Final AIMessage
+```
+
+LLM responsibility is to decide if it needs a tool or not, and generating a tool call.
+
+Application/orchestrator responsibility is to receive the tool call, execute the tool and return the tool result.
+
+---
+
+### Tool fundamentals
+
+#### Tool definition
+
+A python function can be converted into LangChain tool using the official `@tool` decorator.
+
+```python
+@tool
+def get_weather(city: str) -> str:
+    """Get the current weather for a city."""
+    ...
+```
+
+The function's type hints can be used to infer the Tool's input schema.
+
+important tool properties:
+
+```python
+tool.name
+tool.description
+tool.args
+```
+
+`args` describes the Tool's expected input arguments, not its output.
+
+#### Tool schema
+
+simple type hints can create  a basic input schema:
+
+```python
+customer_id: int
+```
+
+which becomes conceptually: customer_id --> integer.
+
+for more structured requirements, an explicit pydantic schema can be used.
+
+For example:
+
+customer_id --> integer.  
+field --> CustomerField.
+
+where:
+
+```text
+CustomerField
+├── name
+├── balance
+└── status
+```
+
+This allows the tool interface to express actual constraints instead of merely documenting them.
+
+#### Pydantic and Enums
+
+Field(description=...) provides descriptive information but does not restrict a string to specific values.
+
+An `Enum` represents a closed set of allowed values.
+
+```text
+field: str
+        ↓
+any string
+
+field: CustomerField
+        ↓
+name | balance | status
+```
+
+This can then be used inside a pydantic `BaseModel` and supplied as the tool's `args_schema`.
+
+---
+
+### Tool interaction
+
+#### `bind_tools()`
+
+`bind_tools()` makes tools available to the model
+
+```python
+llm_with_tools = llm.bind_tools([get_customer_field])
+```
+
+This does not execute the tool and does not call Gemini (the LLM) immediately.  
+It creates a configured model runnable that knows which tools are available when invoked.
+
+Execution occurs latter:
+
+```python
+response = llm_with_tools.invoke(...)
+```
+
+#### Tool calls vs. content
+
+The model still returns an `AIMessage`.  
+If the model produces a normal textual response:
+
+```python
+response.content
+```
+
+is the relevant output.
+
+If the model requests tools:
+
+```python
+response.tool_calls
+```
+
+contains the requested operations.
+
+Conceptually: 
+
+```text
+AIMessage
+│
+├── content
+│     → textual answer
+│
+└── tool_calls
+      → requested operations
+```
+
+A model with tools bounded can still answer directly without using a tool.
+
+#### ToolMessage
+
+After the application executes a tool, its result can be represented as `ToolMessage`.  
+The `tool_call_id` associates teh result with the exact tool call that produced it.
+
+```text
+AIMessage
+ └── tool_call ID: call_123
+          ↓
+      Tool execution
+          ↓
+ToolMessage
+ └── tool_call_id: call_123
+```
+
+This becomes especially important when multiple tool calls are involved.
+
+#### Tool descriptions
+
+Tool descriptions are part of the model-facing interface.  
+
+A weak description: "Get customer information."  
+
+A stronger description explains:
+
+- What the tool does.
+- When it should be used.
+- Sometimes when it should not be used.
+
+The tool description helps the model select the appropriate capability.  
+
+#### Tool design as an interface
+
+A tool has 2 consumers, the application which has access to the actual python implementation and execute the tool; and the LLM which selects the tool and provides the argument.
+
+The LLM consumes the tool's description/schema, while the application consume the tool's implementation.  
+The LLM choose the tool and generates the argument; the application executes the tool.
+
+```text
+                 Tool
+                  │
+        ┌─────────┴─────────┐
+        ↓                   ↓
+   Application             LLM
+        │                   │
+ execution logic      selection + arguments
+```
+
+The application cares about correctness, validation, authorization,error handling and reliability.
+
+The LLM additionally needs to understand what the capability does and how to request it.
+
+---
+
+### Tool architecture
+
+#### Production perspective
+
+A tool is a boundary between probabilistic model behavior and deterministic application code.  
+A production tool should not blindly trust the model.  
+A useful concept architecture is:
+
+```text
+LLM
+ ↓
+Tool schema
+ ↓
+Input validation
+ ↓
+Authorization / business rules
+ ↓
+Tool execution
+ ↓
+External system
+```
+
+The LLM decide which tool to use and generates its arguments. The application validates those arguments, applies authorization and business rules, then executes the tool to interact with the external system.
+
+The important idea is that the LLM does not directly access the external system. THe application controls the execution path.
+
+For failures:
+
+```text
+Internal exception
+ ↓
+Application error handling
+ ↓
+Controlled Tool-level error
+ ↓
+ToolMessage / runtime
+ ↓
+LLM
+ ↓
+User-facing response
+```
+
+If the tool execution fails, the application catches the internal exception and converts it into a controlled tool level error. That error is returned to the LLM, allowing it to understand the failure and produce an appropriate response to the user.
+
+The key idea is the internal implementation errors should not blindly leak to the LLM or user; the application controls how failures are represented and communicated.
+
+We discussed the production layers conceptually but did not fully implement them. Robust authorization, error handling, retries, observability, approval gets , and more advanced execution control will be developed later.
+
+#### Tool vs RAG
+
+Rag primarily retrieved relevant information and puts it into the model's context:
+
+
+```text
+Question
+ ↓
+Retriever
+ ↓
+Relevant documents
+ ↓
+LLM
+```
+
+Tools expose capabilities:
+
+```text
+Question
+ ↓
+LLM decides
+ ↓
+Tool
+ ↓
+External operation
+ ↓
+Result
+ ↓
+LLM
+```
+
+They can also be combined in the same system.
+
+#### Deterministic workflow vs. agent
+
+A deterministic workflow has a developer-defined execution path
+
+Example having 3 functions/tools (`search_customer()`, `get_customer_orders()`,`send_email()`) and the system always executes them in specific order:
+
+```text
+search_customer
+      ↓
+get_customer_orders
+      ↓
+send_email
+```
+
+An agent can dynamically decide what action to take next:
+
+```text
+Goal
+ ↓
+LLM
+ ├── Tool A
+ ├── Tool B
+ ├── Tool C
+ └── Stop
+      ↓
+   Result
+      ↓
+     LLM
+      ↓
+   Next decision
+```
+
+An agent is not simply "an LLM with tools." The important property is dynamic decision-making over actions toward a goal.
+
+---
+
+### Key Takeaways & Engineering Practices: Tools
+
+#### Common mistakes: Tools
+
+- Assuming `bind_tools()` executes a tool.
+- Assuming a tool call means the tool has already executed.
+- Confusing tool input schema with tool output.
+- Treating tool descriptions as developer-only document.
+- Assuming the model must use a tool just because on is available.
+- Trusting the LLM alone to enforce business or security rules.
+- Using overly vague tool descriptions.
+- Replacing deterministic workflows with agents when the workflow is already known.
+
+#### Best practices: Tools
+
+- Give tools narrow, well-defined responsibilities.
+- Use accurate type hints.
+- Use structured schemas when inputs require meaningful constraints.
+- Write tool descriptions specifically for model tool selection.
+- Validate tool inputs.
+- Enforce authorization and business rules outside the model.
+- Handle tool failures explicitly.
+- Keep dangerous side-effecting tools behind appropriate controls or approval mechanisms.
+- Prefer deterministic workflows when the execution path is known.
+- Use agents when dynamic decision-making genuinely provides value.
+
+#### Key takeaways
+
+```text
+Tool
+→ controlled application capability
+
+bind_tools()
+→ makes Tools available to the model
+
+tool_call
+→ model requests an operation
+
+Tool execution
+→ application actually performs the operation
+
+ToolMessage
+→ communicates the Tool result back to the model
+
+Agent
+→ dynamically decides which actions to take and potentially what to do next
+```
+
