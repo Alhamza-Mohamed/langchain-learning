@@ -2497,4 +2497,3 @@ Metadata filter: restrict eligible documents.
 Most importantly:  
 > A retriever is an abstraction for retrieving relevant documents. Vector search is one implementation of retrieval, not the definition of retrieval.  
 Retrieval finds the evidence; RAG uses that evidence to generate an answer.
-
