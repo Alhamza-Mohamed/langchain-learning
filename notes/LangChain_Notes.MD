@@ -95,6 +95,28 @@
       - [Common mistakes: Tools](#common-mistakes-tools)
       - [Best practices: Tools](#best-practices-tools)
       - [Key takeaways](#key-takeaways-1)
+  - [Lesson 8: Retrievers](#lesson-8-retrievers)
+    - [What is retrieval?](#what-is-retrieval)
+    - [Document](#document)
+    - [Retrieve as a runnable](#retrieve-as-a-runnable)
+    - [Custom retrievers](#custom-retrievers)
+    - [Vector retrieval architecture](#vector-retrieval-architecture)
+      - [Embedding model](#embedding-model)
+      - [Vector store](#vector-store)
+      - [Retriever](#retriever)
+    - [Vector store and retriever](#vector-store-and-retriever)
+      - [Similarity search](#similarity-search)
+      - [Top-k](#top-k)
+      - [MMR](#mmr)
+      - [Metadata filtering](#metadata-filtering)
+    - [Retriever vs. vector store](#retriever-vs-vector-store)
+    - [Retriever vs. RAGa](#retriever-vs-raga)
+    - [When to use a retrieve](#when-to-use-a-retrieve)
+    - [When retrieval alone is not enough](#when-retrieval-alone-is-not-enough)
+    - [Key Takeaways \& Engineering Practices: Retrievers](#key-takeaways--engineering-practices-retrievers)
+      - [Common mistakes: Retrievers](#common-mistakes-retrievers)
+      - [Best practice: Retrievers](#best-practice-retrievers)
+      - [Key takeaways: Retrievers](#key-takeaways-retrievers)
 
 ## Lesson 1: Models & chat models
 
@@ -2052,4 +2074,427 @@ ToolMessage
 Agent
 → dynamically decides which actions to take and potentially what to do next
 ```
+
+## Lesson 8: Retrievers
+
+### What is retrieval?
+
+Retrieval is the process of finding information relevant to a given query.
+
+A Retriever is the LangChain abstraction responsible for retrieving relevant `Document` objects based on input query.
+
+```text
+Query: str 
+    ↓ 
+Retriever 
+    ↓ 
+List[Document]
+```
+
+Retrieval does not generate an answer.
+Retrieval finds relevant information.
+
+RAG retrieves relevant information, provides it to an LLM, and generates an answer.
+
+---
+
+### Document
+
+LangChain represents retrieved information using the `Document` object.  
+A `Document` contains two important components.
+
+```text
+Document 
+├── page_content 
+└── metadata
+```
+
+`Page_content` contains the actual text.  
+`metadata` contains information describing the document, such as:
+
+- Source.
+- Page number.
+- Document ID.
+- Other application-specific information.
+
+Metadata is useful for:
+
+- Debugging retrieval.
+- Source attribution.
+- Filtering.
+- Post-processing.
+- Providing additional context.
+
+Example
+
+```python
+Document(
+  page_content="LangGraph is designed for stateful agent workflows.", metadata={"source": "langgraph.txt"}
+)
+```
+
+---
+
+### Retrieve as a runnable
+
+`BaseRetrieve` is part of LangChain's runnable ecosystem.  
+A retriever therefore supports the runnable interface:  
+
+```python
+retriever.invoke(query)
+```
+
+A custom retriever can implement:  
+
+```python
+_get_relevant_document_(query)
+```
+
+While `BaseRetriever` provides the surrounding runnable behavior.
+
+Conceptually:
+
+```text
+retriever.invoke(query) 
+    ↓ 
+BaseRetriever
+    ↓ 
+_get_relevant_documents(query)
+    ↓ 
+List[Document]
+```
+
+This means the same runnable concepts learned previously such as `invoke()` and `batch()` also apply to retrievers.
+
+`invoke()` receives one input query and return one output. The output can contain multiple documents.
+
+`batch()` receives multiple inputs and returns multiple outputs.
+
+### Custom retrievers
+
+A custom retriever can implement retrieval logic appropriate for the application.
+
+For example:
+
+- Using metadata matching.
+- Using Keyword search.
+- Using embedding then vector similarity search
+
+For return the relevant documents.  
+The retriever abstraction does not require one specific retrieval algorithm.
+
+### Vector retrieval architecture
+
+A common semantic retrieval architecture is:
+
+At indexing
+
+```text
+Documents 
+    ↓ 
+Embedding Model 
+    ↓ 
+Document Embeddings 
+    ↓ 
+Vector Store
+```
+
+At query time:
+
+```text
+User Query 
+    ↓ 
+Embedding Model 
+    ↓ 
+Query Embedding 
+    ↓ 
+Vector Store 
+    ↓ 
+Similarity Search 
+    ↓ 
+Relevant Documents
+```
+
+#### Embedding model
+
+Converts text into numerical vectors representing the semantic meaning of the text.  
+Both documents and queries need to be embedded when using vector similarity search.
+
+#### Vector store
+
+Store document embeddings and associated documents.  
+It can perform vector similarity search against a query embedding.
+
+#### Retriever
+
+Provides the retrieval interface and uses the underlying retrieval mechanism to return relevant `Document` objects.
+
+
+Embedding model: convert text into vectors.
+
+Vector store: stores/searches the vectors.
+
+Retriever: exposes retrieval as standard interface.
+
+The embedding model and vector store are not themselves the definition of a retriever.
+
+---
+
+### Vector store and retriever
+
+A vector store can expose a retriever:
+
+```python
+retriever = vector_store.as_retriever()
+```
+
+The application can then use:
+
+```python
+documents = retriever.invoke(query) 
+```
+
+This separates the application-facing retrieval interface from the underlying search implementation.
+
+```text
+Vector Store 
+    ↓ 
+.as_retriever() 
+    ↓ 
+Retriever 
+    ↓ 
+invoke(query) 
+    ↓ 
+List[Document]
+```
+
+#### Similarity search
+
+Similarity search retrieves documents whose embeddings are most similar to the query embedding.
+
+For example:
+
+```text
+Query: 
+"How do I build stateful agent workflows?" 
+    ↓ 
+Query embedding 
+    ↓ 
+Similarity search 
+    ↓ 
+LangGraph document
+```
+
+Semantic search does not require the query to contain the exact words appearing in the document.  
+The goal is to find documents that are most relevant according to the retrieval method.
+
+#### Top-k
+
+The `k` parameter controls how many final documents are returned.
+
+Example:
+
+```Python
+retriever = vector_store.as_retriever( search_kwargs={"k": 2} )
+```
+
+`k = 2` does not mean that those 2 documents contain the answer, it means return the 2 documents judged most relevant by the configured retrieval method.  
+Retrieval is therefore a candidate-selection stage, not an oracle.
+
+#### MMR
+
+MMR stands for maximal marginal relevance.  
+
+Normal similarity search focuses primarily on relevance.  
+MMR balance relevance to query and diversity among selected documents.
+
+This helps avoid returning several nearly identical documents or overlapping chunks.
+
+Example:
+
+```text
+Similarity search: 
+A — Remote employees receive 21 vacation days. 
+B — Remote employees receive 21 vacation days per year. 
+C — Remote employees follow the same vacation policy.
+```
+
+MMR may prefer:
+
+```text
+A — vacation days 
+D — request procedure 
+E — carry-over rules
+```
+
+Because these provide more diverse information.  
+MMR does not ignore relevance. it considers both relevance and redundancy.
+
+A retriever can be configured to use MMR:
+
+```python
+retriever = vector_store.as_retriever( 
+  search_type="mmr",
+  search_kwargs={ 
+    "k": 3, 
+    "fetch_k": 10 
+    }
+  )
+```
+
+`fetch_k`: candidate pool consider by MMR.  
+`k`: final number of documents returned.  
+
+`lambda_mult` controls the balance between the relevance and diversity.  
+Higher emphasis on relevance makes behavior more similar to ordinary similarity search, while greater emphasis on diversity encourages less results.
+
+#### Metadata filtering
+
+Metadata can also be used to restrict the retrieval candidate pool.
+
+For example:  
+Having 1,000,000 documents, `filter: topic = "agents"` so it filters the eligible documents into 2000 eligible documents, and after applying semantic search with `k = 5` we got hte most relevant documents where topic is agents.
+
+Filtering and semantic search solve different problems:  
+Metadata filtering asks "Which documents are eligible?" while semantic search asks "Which eligible documents are most relevant?".
+
+In a production system, metadata filtering can be especially important for:
+
+- Tenant isolation.
+- Document categories.
+- Permissions.
+- Source restrictions.
+- Dates.
+- Departments.
+
+However, authorization should not be delegated to the LLM. Security and access-control rules should be enforced by the application/data layer.
+
+---
+
+### Retriever vs. vector store
+
+Vector store: stores and searches vectors.  
+Retriever: provides a standardized retrieval interface.
+
+A retriever may use a vector store internally, but retrieval does not inherently require vector search.
+
+Other retrieval strategies include:
+
+- Keyword/lexical search.
+- Database queries.
+- Metadata filtering.
+- Hybrid search.
+- Other domain-specific retrieval methods.
+
+### Retriever vs. RAGa
+
+Retriever workflow:
+
+```text
+Query 
+  ↓ 
+Retriever 
+  ↓ 
+Relevant Documents
+```
+
+RAG workflow:
+
+```text
+User Query 
+  ↓ 
+Retriever 
+  ↓ 
+Relevant Documents 
+  ↓ 
+Context / Prompt 
+  ↓ 
+LLM 
+  ↓ 
+Generated Answer
+```
+
+The retriever finds the evidence, while the LLM generates the answer. RAG combines both stages.
+
+---
+
+### When to use a retrieve
+
+Use a retriever when an application needs to dynamically find relevant information from a collection of data.
+
+Common examples:
+
+- RAG systems.
+- Enterprise knowledge bases.
+- Document search.
+- Customer-support systems.
+- Question answering.
+- Coding assistants.
+- Agent Workflows requiring external knowledge.
+
+### When retrieval alone is not enough
+
+Retrieval does not generate an answer.  
+If the application needs a natural-language response based on retrieved information, retrieval must combined with a generation component such as an LLM.
+
+Also, retriever quality depends heavily on the underlying retrieval strategy and data preparation.  
+Poor retrieval can produce poor RAG even when the LLM itself is capable.
+
+---
+
+### Key Takeaways & Engineering Practices: Retrievers
+
+#### Common mistakes: Retrievers
+
+Confusing retrieval with RAG:  
+Retrieval only finds relevant information, RAG combines retrieval with generation.
+
+Assuming retrievers require embeddings:  
+Embeddings are common for semantic/vector retrieval but are not required by the retriever abstraction.
+
+Assuming k means correct answers:  
+`k`  controls the number of returned candidates, not whether those documents actually contain the answer.
+
+Confusing vector stores with retrievers:  
+A vector store performs storage/search operations.  
+A retriever exposes a retrieval interface.
+
+Assuming more documents retrieving always means better RAG:  
+Increasing `k` can introduce irrelevant or redundant information and increase context size, latency, and cost.
+
+Assuming MMR simply picks different words:  
+MMR considers similarity between documents semantically; it is not merely checking whether documents share the same literal words.
+
+#### Best practice: Retrievers
+
+- Treat retrieval as an independent engineering stage.
+- Preserve useful metadata with every `Document`.
+- Tune `k` according to the application rather than choosing it arbitrarily.
+- Consider MMR when retrieved chunks are highly redundant.
+- Use metadata filtering to constrain the retrieval candidate pool when appropriate.
+- Evaluate retrieval quality separately from generation quality.
+- Keep authorization and security enforcement outside the LLM.
+- Remember that retriever configuration and filter syntax can depend on the underlying vector store.
+
+#### Key takeaways: Retrievers
+
+Retriever: take a query input and return `list[Document]` output.
+
+Document: consist of page_content + metadata.
+
+Embedding model: convert text to vector.
+
+Vector store: Stores and searches vectors.
+
+Similarity: prioritize relevance.
+
+MMR: combine relevance with diversity.
+
+`K`: number of final results.
+
+Metadata filter: restrict eligible documents.
+
+Most importantly:  
+> A retriever is an abstraction for retrieving relevant documents. Vector search is one implementation of retrieval, not the definition of retrieval.  
+Retrieval finds the evidence; RAG uses that evidence to generate an answer.
 
