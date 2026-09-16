@@ -88,7 +88,7 @@
       - [Tool descriptions](#tool-descriptions)
       - [Tool design as an interface](#tool-design-as-an-interface)
     - [Tool architecture](#tool-architecture)
-      - [Production perspective](#production-perspective)
+      - [Production perspective: Tools](#production-perspective-tools)
       - [Tool vs RAG](#tool-vs-rag)
       - [Deterministic workflow vs. agent](#deterministic-workflow-vs-agent)
     - [Key Takeaways \& Engineering Practices: Tools](#key-takeaways--engineering-practices-tools)
@@ -117,6 +117,19 @@
       - [Common mistakes: Retrievers](#common-mistakes-retrievers)
       - [Best practice: Retrievers](#best-practice-retrievers)
       - [Key takeaways: Retrievers](#key-takeaways-retrievers)
+  - [Lesson 9: RAG (Retrieval augmented generation)](#lesson-9-rag-retrieval-augmented-generation)
+    - [What is RAG?](#what-is-rag)
+    - [Why RAG exists](#why-rag-exists)
+    - [Grounding](#grounding)
+    - [Retrieval quality](#retrieval-quality)
+    - [Conversational RAG](#conversational-rag)
+    - [RAG with LCEL](#rag-with-lcel)
+    - [Manual RAG vs. LCEL RAG](#manual-rag-vs-lcel-rag)
+    - [Production perspective: RAG](#production-perspective-rag)
+    - [Key Takeaways \& Engineering Practices: RAG](#key-takeaways--engineering-practices-rag)
+      - [Common mistakes: RAG](#common-mistakes-rag)
+      - [Mental model: RAG](#mental-model-rag)
+      - [Key takeaway: RAG](#key-takeaway-rag)
 
 ## Lesson 1: Models & chat models
 
@@ -1912,7 +1925,7 @@ The LLM additionally needs to understand what the capability does and how to req
 
 ### Tool architecture
 
-#### Production perspective
+#### Production perspective: Tools
 
 A tool is a boundary between probabilistic model behavior and deterministic application code.  
 A production tool should not blindly trust the model.  
@@ -2497,3 +2510,371 @@ Metadata filter: restrict eligible documents.
 Most importantly:  
 > A retriever is an abstraction for retrieving relevant documents. Vector search is one implementation of retrieval, not the definition of retrieval.  
 Retrieval finds the evidence; RAG uses that evidence to generate an answer.
+
+## Lesson 9: RAG (Retrieval augmented generation)
+
+### What is RAG?
+
+RAG (Retrieval augmented generation) is an application architecture that retrieves relevant external information and provides it to an LLM as context before generation.
+
+basic work flow:
+
+```text
+User Question
+      ↓
+Retriever
+      ↓
+Relevant Documents
+      ↓
+Context
+      ↓
+Prompt
+      ↓
+LLM
+      ↓
+Answer
+```
+
+RAG is not a special type of LLM. It is a system architecture built around an LLM.
+
+### Why RAG exists
+
+LLMs have limitations:
+
+- Their knowledge may be outdated.
+- They may not have access to private organizational data.
+- They can hallucinate when information is unavailable.
+- Putting an entire knowledge base directly into the prompt is inefficient.
+- Fine-tuning is not the appropriate solution for every knowledge-retrieval problem.
+
+RAG addresses this by retrieving relevant information at query time and giving it to the model as context.
+
+Instead of asking LLM "Answer this from everything you know."
+
+We build RAG system where the relevant information is retrieved fro the knowledge base based on the question then both the question and the knowledge information are given to the LLM, the LLM then generate a grounded answer:
+
+```text
+Question
+   ↓
+Retrieve relevant knowledge
+   ↓
+Give that knowledge to the LLM
+   ↓
+Generate a grounded answer
+```
+
+**What is the Engineering purpose of RAG?**  
+The primary purpose of RAG is to connect an LLM to external knowledge at inference time.
+
+**When Should You Use RAG?**  
+RAG is particularly useful when an application needs to answer question using external or changing information.  
+
+Typical sources includes:
+
+- **Applications:**
+  - Documentation assistants
+  - Enterprise knowledge bases
+  - Customer-support systems
+  - Document question answering
+  - Research assistants
+  - Internal company search
+  - Applications over private data
+
+- **Data sources:**
+  - Company documents
+  - PDFs
+  - Databases
+  - Documentation
+  - Knowledge bases
+  - Product information
+  - Internal policies
+  - Search indexes
+
+RAG is less useful when the task does not require external knowledge or retrieval.
+
+RAG separate two responsibilities:
+
+Retrieval → Find useful information.  
+Generation → Produce a useful response.  
+
+The retriever does not generate the answer.  
+The LLM does not need to know the entire knowledge base beforehand.
+
+---
+
+### Grounding
+
+A RAG system should generally instruct the LLM to use only teh supplied context when the application requires grounded answers.
+
+Example:
+
+```text
+Answer the question using ONLY the provided context.  
+
+If the context does not contain enough information to answer the question, say that you don't have enough information.
+```
+
+This creates a **knowledge boundary** around the answer.
+
+However, this is not a complete guarantee against hallucination.  
+
+If retrieval fails to find information that actually exists in the knowledge base, the LLM may incorrectly conclude that the information is unavailable.  
+Therefore good grounding + good retrieval = More reliable RAG.
+
+Production RAG may additionally use:
+
+- Retrieval thresholds.
+- Better chunking.
+- Query rewriting.
+- Re-ranking.
+- Hybrid retrieval.
+- Metadata filtering.
+- Evaluation.
+- Citation/Source tracking.
+
+### Retrieval quality
+
+The objective of RAG is to retrieve the smallest useful set of high-quality evidence/documents, **not** retrieving as many documents as possible.  
+
+Too few documents can cause missing information.  
+While too many documents can cause:
+
+- Irrelevant contexts.
+- Higher token usage.
+- Higher latency.
+- More difficult reasoning.
+- context-window pressure.
+
+The goal is therefore relevant context, not maximum context.
+
+**Retrieval quality vs. generation quality**  
+
+RAG introduces two major quality dimensions.  
+Retrieval quality: did we retrieve the right information?  
+Generation quality: did the LLM correctly use that information?
+
+These problems should be considered separately.  
+
+A system can have excellent generation but poor retrieval. It can also retrieve excellent documents but produce a poor answer because the generation step is badly designed.  
+This separation is useful when debugging RAG systems.
+
+If the answer is wrong ask: was the information missing from the retrieved context?  
+If yes, investigate the retrieval. If the correct information was present but the model ignored or misunderstood it, investigate generation.
+
+---
+
+### Conversational RAG
+
+Normal RAG treats the current query as the retrieval input.  
+This becomes problematic when the user asks flow-up questions.  
+For example:
+
+> User: What is LangGraph?
+
+Then:
+
+> User: How is it different from LangChain?
+
+The second question depends on the conversation. A retriever receiving only "How is it different from LangChain?".
+
+So it may not have enough information to understand what "it" refers to.
+
+Conversational RAG therefore introduce conversation history into the retrieval process.  
+The important distinction is that conversation  history provides conversational context. Retrieved documents provide knowledge context.
+
+They serve different purposes and should not automatically be treated as the same thing.
+
+**Quey rewriting**  
+
+One common solution to conversational retrieval is query rewriting.  
+The system use conversation history and the user's  latest question to produce a standalone query.
+
+Example:
+Conversation: What is LangGraph?  
+
+Follow-up: How is it different from LangChian?
+
+Rewritten retrieval query: How is LangGraph different LangChian?
+
+The rewritten query is then sent to the retriever.  
+
+An important architectural distinction is that the rewritten query is primarily a retrieval query.  
+The original use question should normally remain the question used for the final response.  
+This prevents the retrieval-oriented transformation from unnecessarily changing what user actually asked.
+
+**Conversation history is not retrieved context**  
+
+These two concepts are easy to mix up
+
+**Conversation history:** contains previous interactions between the user and the assistant.
+
+**Retrieved context:** contains information retrieved from external knowledge base for the current question.
+
+History:
+
+> Human what LangGraph?  
+> AI: LangGraph is designed for stateful agent workflows.
+
+Retrieved context:
+
+> LangGraph is a framework for building stateful agent workflows...
+
+The history tells the system what has been discussed.  
+The retrieved context provides external knowledge relevant to the current question.
+
+In conversational RAG, the history can help construct a better retrieval query, while the newly retrieved documents provide the knowledge used for the answer.
+
+### RAG with LCEL
+
+LCEL allows the RAG architecture to be represented as a composable pipeline.
+
+The important idea is not memorizing the exact chain syntax, but understanding the data flow.
+
+A conversational RAG pipeline can conceptually be viewed as:
+
+```text
+Input
+  ↓
+Conversation-Aware Query Rewriting
+  ↓
+Retrieval
+  ↓
+Document Formatting
+  ↓
+Combine:
+  ├── Original Question
+  ├── Conversation History
+  └── Retrieved Context
+  ↓
+Prompt
+  ↓
+LLM
+  ↓
+Output Parser
+  ↓
+Answer
+```
+
+LCEL provides the composition mechanism that connects these stages.
+
+Useful runnable concepts encountered here include:
+
+- **`RunnableParallel`:** Runs multiple branches from the same input and combines their results into a dictionary. This useful when several pieces of information need to be prepared independently.
+
+- **`RunnableLambda`:** Turns a normal python callable into a Runnable. It is useful for small transformation, such as extracting one field from an input dictionary or formatting data.
+
+- **`RunnablePassThrough`:** Passes the input through unchanged. It is useful when a value needs to remain available while other branches transform the same input
+
+Key architecture:
+
+> Use a RUnnable because it represent a meaningful transformation or routing step, not simply because everything could theoretically be wrapped in one.
+
+### Manual RAG vs. LCEL RAG
+
+A manually implemented RAG makes the individual operations explicit(صريحة). This is useful for learning because you can clearly see query rewriting, retrieval, context construction, prompt construction, and generation.  
+
+LCEL expresses the same architecture as composable pipeline. The advantage is not that LCEL magically makes RAG work better.  
+Its advantage is that the pipeline becomes easier to compose, reuse, inspect, and extend.  
+The underlying RAG architecture remains the same.
+
+Manual implementation teaches the mechanism.  
+LCEL provides a structured way to compose those mechanics.
+
+### Production perspective: RAG
+
+A production RAG system is considerable more sophisticated than the basic pipeline studied here
+
+Real system may add:
+
+- Better document parsing.
+- Intelligent chunking.
+- Hybrid search.
+- Query rewriting.
+- Re-ranking
+- Retrieval thresholds.
+- Deduplication.
+- Contextual compression.
+- Caching.
+- Evaluation pipelines.
+- Observability.
+- Access control
+- source citations.
+
+The basic RAG pipeline should therefore be viewed as the foundation rather than the final architecture.
+
+Useful production model is:  
+Ingestion → Indexing → Retrieval → Context Selection → Generation → Evaluation
+
+Each stage can become its own engineering problem
+
+---
+
+### Key Takeaways & Engineering Practices: RAG
+
+#### Common mistakes: RAG
+
+Retrieving too many documents:
+  More context can mean more noise rather than more knowledge.  
+
+Assuming similarity means relevance: 
+ An embedding similarity score is not the same thing as semantic correctness
+
+Ignoring retrieval failures:
+  A wrong answer may originate from the retriever rather that the LLM.
+
+Treating conversation history as the knowledge base:
+  History  helps understanding the conversation retrieved documents provide external knowledge.
+
+Using the rewritten query as the final user question:  
+  Query rewriting is primarily a retrieval operation. The original question should generally remain the user-facing question.
+
+#### Mental model: RAG
+
+The most important mental model from this lesson is: The application retrieves information first and places that information into the model's context.
+
+Therefore:
+
+```text
+User question
+     ↓
+Understand the question
+     ↓
+Formulate an effective retrieval query
+     ↓
+Retrieve relevant information
+     ↓
+Select useful context
+     ↓
+Give context to the LLM
+     ↓
+Generate the answer
+
+```
+
+For conversational RAG:
+
+- Conversation history helps understand what the user means.
+- Query rewriting converts that meaning into a retrieval-friendly query.
+- Retrieval finds external knowledge.
+- The original question remains the user's actual request.
+- The LLM uses the retrieved knowledge to generate the response.
+- That separation of responsibilities is the core architecture to remember.
+
+#### Key takeaway: RAG
+
+RAG is an architectural pattern for giving an LLM access to external knowledge at inference time.
+
+RAG effectiveness depends on the entire pipeline, not only the LLM.
+
+The most important distinction to remember is:
+
+- Retrieval decides what information the model gets.
+- Generation decides how that information becomes an answer.
+
+In conversational RAG:
+
+- History explains the conversation.
+- Query rewriting makes the question retrievable.
+- Retrieved context provides the knowledge.
+- The LLM generates the final answer.
+
