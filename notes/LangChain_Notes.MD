@@ -73,7 +73,7 @@
       - [Key takeaways: Runnables](#key-takeaways-runnables)
       - [Common mistake: Runnables](#common-mistake-runnables)
       - [Best practice: Runnables](#best-practice-runnables)
-    - [Personal observations](#personal-observations)
+    - [Personal observations: Runnables](#personal-observations-runnables)
   - [Lesson 7: Tools](#lesson-7-tools)
     - [Why tools exist?](#why-tools-exist)
     - [Tool call and Tool execution](#tool-call-and-tool-execution)
@@ -130,6 +130,22 @@
       - [Common mistakes: RAG](#common-mistakes-rag)
       - [Mental model: RAG](#mental-model-rag)
       - [Key takeaway: RAG](#key-takeaway-rag)
+  - [Lesson 10: Agents](#lesson-10-agents)
+    - [Deterministic workflow vs. agents](#deterministic-workflow-vs-agents)
+    - [The agentic loop](#the-agentic-loop)
+    - [Why agents exist](#why-agents-exist)
+    - [Minimal agent](#minimal-agent)
+    - [Tool calling vs agents](#tool-calling-vs-agents)
+    - [Reading an agent execution trace](#reading-an-agent-execution-trace)
+    - [Multiple tool calls](#multiple-tool-calls)
+    - [Information Gaps and Tool Dependencies](#information-gaps-and-tool-dependencies)
+    - [Tool Boundaries and Agent Decision-Making](#tool-boundaries-and-agent-decision-making)
+    - [RAG vs agents](#rag-vs-agents)
+    - [Production perspective: Agents](#production-perspective-agents)
+    - [Key Takeaways \& Engineering Practices: Agents](#key-takeaways--engineering-practices-agents)
+      - [Common mistakes: Agents](#common-mistakes-agents)
+      - [Key mental models: Agents](#key-mental-models-agents)
+      - [Personal observations: Agents](#personal-observations-agents)
 
 ## Lesson 1: Models & chat models
 
@@ -1609,7 +1625,7 @@ Runnables therefore provide an important architecture foundation for large LangC
 - Avoid creating unnecessarily large monolithic chains.
 - Separate data preparation, generation, parsing, and business logic when possible.
 
-### Personal observations
+### Personal observations: Runnables
 
 The mental model during the lesson:
 
@@ -2813,19 +2829,19 @@ Each stage can become its own engineering problem
 
 #### Common mistakes: RAG
 
-Retrieving too many documents:
+**Retrieving too many documents**  
   More context can mean more noise rather than more knowledge.  
 
-Assuming similarity means relevance: 
+**Assuming similarity means relevance**  
  An embedding similarity score is not the same thing as semantic correctness
 
-Ignoring retrieval failures:
+**Ignoring retrieval failures**  
   A wrong answer may originate from the retriever rather that the LLM.
 
-Treating conversation history as the knowledge base:
+**Treating conversation history as the knowledge base**  
   History  helps understanding the conversation retrieved documents provide external knowledge.
 
-Using the rewritten query as the final user question:  
+**Using the rewritten query as the final user question**  
   Query rewriting is primarily a retrieval operation. The original question should generally remain the user-facing question.
 
 #### Mental model: RAG
@@ -2878,3 +2894,731 @@ In conversational RAG:
 - Retrieved context provides the knowledge.
 - The LLM generates the final answer.
 
+## Lesson 10: Agents
+
+An agent is an LLM-driven decision loop that can choose which available action to take, execute that action through a tool, observe the result, and decide what to do next.
+
+The important distinction not simply that an agent uses tools.
+
+The goal is to understand what makes a system an agent, how agentic execution differs from deterministic  workflow and how Lang chain provides the abstraction needed to build agent
+
+A **deterministic workflow** defines the execution path in advance. An **agent** provides a goal and a bounded set of capabilities, then allows the LLM to decide what action to take next based on the information currently available.
+
+### Deterministic workflow vs. agents
+
+The important distinction is knowing who determines what happens next, not "does the system use tools?".
+
+A deterministic workflow has an execution path defined by the application.  
+For example, the RAG system follows known structure:  
+
+```text
+User Question
+      ↓
+Query Processing
+      ↓
+Retrieval
+      ↓
+Context Formatting
+      ↓
+Prompt
+      ↓
+LLM
+      ↓
+Answer
+```
+
+The application defines this sequence.  
+
+The LLM may perform reasoning or language generation inside individual steps, but it does not decide whether retrieval should happen after the prompt, whether another retrieval operation should happen, or whether the application should suddenly call another capability.  
+The work flow is encoded by the application.
+
+An agent is different:
+
+```text
+User Goal
+    ↓
+   LLM
+    ↓
+Decide Action
+    ↓
+  Tool
+    ↓
+Tool Result
+    ↓
+   LLM
+    ↓
+Decide Again
+   ↙    ↘
+Tool   Answer
+```
+
+The application still defines the available capabilities and boundaries.  
+However the LLM participates in deciding the execution path.
+
+A useful mental model is:  
+
+**Deterministic workflow:** application controls the execution path.   (workflow: Here are the steps you must follow.)  
+
+**Agent:** application controls the available capabilities. LLM controls the decision-making within those boundaries.  
+(Agent: here is your goal and here are the capabilities you are allowed to use, decide what to do.)
+
+This does not mean an agent is uncontrolled. The LLM cannot suddenly execute arbitrary python, access an arbitrary database, or send an email unless the application has exposed an appropriate capability.
+
+---
+
+### The agentic loop
+
+An agent can be understood as decision loop around an LLM.
+
+
+```text
+Current Goal + Available Information + Available Tools
+              ↓
+            LLM
+              ↓
+        Choose Action
+              ↓
+      Tool Execution
+              ↓
+        Tool Result
+              ↓
+            LLM
+              ↓
+  Do I have enough information?
+        ↙              ↘
+      Yes               No
+        ↓                 ↓
+  Final Answer       Another Action
+```
+
+The important distinction is between the mechanics of the loop and the decision inside it.
+
+The runtime knows how to:
+
+1. receive a tool call
+2. execute the corresponding tool
+3. return the result 
+4. provide that result to the model
+5. continue or terminate the execution
+
+The dynamic part part is the LLM's choice of what action should happen next.
+
+Therefore, the runtime controls execution mechanics; the LLM controls action selection within the application's boundaries.  
+This is the core of agentic execution.
+
+### Why agents exist
+
+Before agent abstraction, an application could manually implement the tool-calling loop:
+
+```text
+LLM
+ ↓
+Inspect response
+ ↓
+Find requested tool
+ ↓
+Execute tool
+ ↓
+Add result to messages
+ ↓
+Call LLM again
+ ↓
+Repeat
+```
+
+This is possible, but as the system grows, the orchestration becomes more complicated. The application may need to handle:
+
+- multiple tools
+- repeated tool calls
+- different execution paths
+- message state
+- termination
+- tool errors
+- validation
+- retries
+- observability
+
+An agent abstraction packages this recurring orchestration into a reusable runtime.  
+In LangChain:
+
+```python
+from langchain.agents import create_agent
+
+agent = create_agent( model=llm, tools=tools, )
+```
+
+The abstraction provides the machinery around: LLM → Tool → Result → LLM → ...
+
+### Minimal agent
+
+A minimal agent requires a model and a set of available tools.
+
+Example:
+
+```python
+
+from langchain.agents import create_agent
+from langchain_core.tools import tool 
+
+@tool
+def get_weather(city: str) -> str:
+  """Get the weather for a city.""" 
+  return f"The weather in {city} is sunny." 
+ 
+agent = create_agent( 
+  model=llm, 
+  tools=[get_weather],
+  )
+```
+
+The important architecture is:
+
+```text
+Application
+    │
+    ├── Model
+    │
+    └── Tools
+          │
+          └── get_weather()
+```
+
+The model does not directly execute the Python functions.  
+The application exposes `get_weather()` as a capability.  
+The LLM can request that capability through a structured tool call, and the runtime performs the actual python execution.  
+
+This gives us an important boundary:  
+The LLM decides what capability it wants. 
+The application decides what that capability actually does.
+
+---
+
+### Tool calling vs agents
+
+Tool calling and agents are closely related, but they are not the same thing.  
+Tool calling can be viewed as:  
+`LLM → Tool`
+
+The model produces a structured request for a particular tool.
+
+An agent extend this into a decision loop:
+
+```text
+LLM
+ ↓
+Tool
+ ↓
+Result
+ ↓
+LLM
+ ↓
+Tool / Answer
+ ↓
+...
+```
+
+Therefore tool calling is a capability. Agentic execution is a decision loop that can use that capability repeatedly.
+
+Having several tools does not automatically make a system an agent.  
+A system could exposes several tools but still use a deterministic workflow: `User → Tool A → Tool B → LLM`.  
+If the application always performs the same exact steps, the execution remains deterministic.
+
+The important question is whether the LLM determines the next action.
+
+---
+
+### Reading an agent execution trace
+
+One of the most useful practical skills is being able to read an agent's message sequence.
+
+```text
+HumanMessage
+    ↓
+AIMessage
+    └── tool_call: get_weather(...)
+    ↓
+ToolMessage
+    └── weather result
+    ↓
+AIMessage
+    └── final answer
+```
+
+The first `AIMessage` represents the model requesting an action.  
+The `ToolMessage` represents the result produced by the application after executing that action.  
+The final `AIMessage` is generated after the model receives the tool result.
+
+A useful practical distinction is `AIMessage.tool_calls`, when the model wants the runtime to perform an action, the AI message contains tool calls.  
+Once the model has enough information and produces the final response, there is no further tool call.  
+This distinction becomes especially useful when debugging agents because an agent's output is not necessarily just `final answer`, it can contain the entire execution history.
+
+### Multiple tool calls
+
+An agent does not necessarily have to execute exactly one tool at time.  
+
+Suppose two tools provide independent information:
+
+```text
+get_weather(city)
+get_temperature(city)
+```
+
+THe model may request both in the same response because neither operation depends on the result of the other:
+
+```text
+AIMessage
+ ├── get_weather("Cairo")
+ └── get_temperature("Cairo")
+          ↓
+    Tool Results
+          ↓
+      AIMessage
+          ↓
+     Final Answer
+```
+
+The important concept is dependency. If two operations are independent, they maybe requested together.  
+If one operation depends on information produced by another, they must be logically sequenced.
+
+for example:
+
+```text
+search_product()
+      ↓
+  product ID
+      ↓
+get_product_details(product_id)
+```
+
+The second operation cannot correctly execute until the first operation has produced the required product ID.  
+This leads to one of the most important observations from this lesson:  
+>Tool order is often determined by information dependencies, not by the order in which the tools were defined.
+
+### Information Gaps and Tool Dependencies
+
+**Agents close information gaps**  
+
+A useful mental model is to think of an agent as repeatedly closing an information gap. The agent's decision-making process:
+
+```text
+What the system currently knows
+              ↓
+      What is still missing
+              ↓
+        Possible actions
+              ↓
+      Choose an action
+              ↓
+        New information
+              ↓
+         Re-evaluate
+```
+
+Consider: "Tell me the details of a GPU under $600."
+
+Initially, hte agent may know the user's goal but not the internal product ID required by the details tool. It can therefore use:
+
+```python
+search_product(
+    query="GPU",
+    max_price=600
+)
+```
+
+Suppose the result identifies a product `product ID=2`. Now the agent has information that it did not previously have. It can use `get_product_details(product_id=2)`.  
+After receiving that detailed result, it may finally have enough information to answer.  
+
+The important insight is not the particular product example, it is the pattern:
+> The result one action can create the information required for the next action.
+
+This is why agentic systems cannot always be represented as one fixed sequence.
+
+**Information dependency determines tool order**  
+
+An important misconception is "If an agent has five tools, it should use all five."  
+No. The agent should use the capabilities necessary to satisfy the goal.  
+
+For example suppose the user asks "Do you have GPU?"  
+If `search_product("GPU)` already provides enough information to answer the question, there is no reason to call `get_product_details(...)`. The agent can stop.
+
+This gives us another important mental model:
+
+```text
+Goal
+ ↓
+Current information
+ ↓
+Is the goal satisfied?
+ ↙              ↘
+Yes              No
+ ↓                ↓
+Stop          Take another action
+```
+
+The agent is therefore not simply executing a predefined list of tools. It is repeatedly evaluating whether another action is necessary.  
+
+---
+
+### Tool Boundaries and Agent Decision-Making
+
+**Tool boundaries**  
+
+A tool is more than a python function decorated with `@tool`.  
+From the agent's perspective, a tool is an interface to a capability.
+
+An agent does not directly access the application's backend systems. It reasons over the tool interfaces exposed to it.
+
+The tool's name, description, and schema tell the agent  what capabilities are available and how they can be requested.  
+The application remains responsible for executing the selected tool and enforcing validation, authorization, and business rules.
+
+```text
+Agent
+  ↓
+Tool interface
+  ↓
+Application
+  ↓
+External system
+```
+
+The Tool lesson (lesson 7) covers how to design this interface. In this lesson we focus on how the LLM uses thse interface to decide what action to take next.
+
+**Tool interfaces and agent decision-making**  
+
+The tool lesson established how a tool is exposed to an LLM though its name, description, and input schema. In an agent, this interfaces become the capabilities the model can reason over.  
+
+The important difference is that the agent is not simply following a predefined sequence of tool calls.  
+Instead, it considers:
+
+```text
+User Goal
+    +
+Available Capabilities
+    +
+Information Currently Available
+        ↓
+Next Action
+```
+
+The agent can choose a tool, use the result to update its understanding of the task, and then decide what to do next.  
+The tool itself remains an application-controlled capability.  
+The agent controls the decision of whether and when to request it.
+
+**Tool interface complexity**  
+
+An agent does not necessarily become better when more tools, or more configurable tools are added.  
+The available tools form the agent's action space. If many tools overlap or expose unnecessary complexity, the model has more possibilities to reason over without necessarily gaining useful capability.  
+
+Therefore, the goal is not to maximize the number of tools.  
+The goal is to expose the clear set of capabilities that allows the agent to accomplish the intended task.  
+
+This leads to an important agent-design principle:
+> Give the agent enough capabilities to accomplish the goal, but avoid unnecessary or overlapping capabilities.
+
+
+This is different from the detailed tool-design question covered in Lesson 7. Here, hte concern is how the overall set of available capabilities affects the agent's decision-making.
+
+**Information gaps and tool dependencies**  
+
+An agent often needs to acquire information before it can determine its next action.  
+The current information available to the agent therefore affects what it can doe next.
+
+For example:
+
+```text
+User:
+"Tell me the detailed information about a GPU under $600."
+        ↓
+Information currently available:
+No matching product identified
+        ↓
+search_product(...)
+        ↓
+Result:
+Product ID = 2
+        ↓
+Information currently available:
+A matching product has been identified,
+but its details are still unknown
+        ↓
+get_product_details(2)
+        ↓
+Detailed result
+        ↓
+Enough information
+        ↓
+Final answer
+```
+
+The important point is that the agent does not necessarily have a predefined rule such as `search_product → get_product details`.  
+Instead, the second action becomes useful because the first action produced information required to continue toward the user's goal.
+
+This create an information dependency:
+> If the result of one action provides information required for another action, that dependency can determine the next tool the agent should use.
+
+The can also stop when the information it has is sufficient to accomplish the goal.
+
+An agent is **not** just an LLM that calls tools. it use tools to acquire or transform information needed to accomplish a goal, while dynamically deciding what action is appropriate based on the current state of the task.
+
+---
+
+### RAG vs agents
+
+RAG and agents solve different problems.  
+
+A deterministic RAG workflow answers a questions such as "How do I retrieve relevant external knowledge and provide it to the LLM?".  
+
+An agent answers a different question "What action should the system take next to accomplish user's goal?".
+
+RAG is an information-retrieval architecture.  
+An agent is a dynamic decision-making/orchestration architecture.
+
+They can be combined.  
+For example, an agent may have a retrieval tool and decide when retrieval is necessary.  
+But RAG itself does not imply agentic execution.  
+If the retrieval process is already known and stable, adding an agent may simply introduce unnecessary complexity.  
+
+### Production perspective: Agents
+
+In real AI product, an agent would rarely exist as an isolated component.  
+A simplified architecture could look like:
+
+```text
+      User
+        ↓
+  Application API
+        ↓
+    Agent Runtime
+        ↓
+      LLM
+    ↙   ↓   ↘
+Search  RAG  Database
+  ↓      ↓      ↓
+APIs / External Systems
+```
+
+The agent provides flexible decision-making.  
+The application provides the boundaries.  
+The tools provide controlled access to external capabilities.  
+The deterministic backend performs the operations that should not depend on probabilistic model behavior.
+
+This division of responsibility is one of the most important architectural ideas to carry into production AI engineering.
+
+**Agents production trade-offs**  
+
+Agents provide flexibility, but flexibility has a cost. Compared with a fixed workflow, agentic execution can introduce:
+
+- additional model calls
+- higher latency
+- higher cost
+- less predictable execution paths
+- incorrect tool selection
+- invalid tool arguments
+- tool failures
+- termination problems
+- more complicated debugging
+- greater observability requirements
+
+This does't mean agents is bad, it means their flexibility should solve an actual engineering problem. A useful production principle is:
+
+> Use an agent when dynamic decision-making provides value, not simply because the system can be made agentic.
+
+**Agents production boundaries**  
+
+A production agent is not simply LLM + several tools. The surrounding application myst still enforce important boundaries.  
+A production system may need to control:
+
+- Capabilities.
+- Permissions.
+- Tool validation.
+- Execution limits.
+- Timeouts.
+- Retries.
+- Error handling.
+- Termination.
+- Observability.
+- Cost.
+- Latency.
+
+The LLM can decide "I need search for this product."  
+But deterministic application code should still decide:
+
+- Whether the request is valid.
+- Whether the user has permission.
+- Whether the arguments are acceptable.
+- Whether the operation is allowed.
+- How the backend operation is performed.
+- How failures are handled.
+
+This becomes particularly important when tools have side effects, examples include:
+
+- Send an email.
+- Modify a database record.
+- Create an order.
+- Make a purchase.
+- Delete data.
+- Execute an external operation.
+
+THe LLM should not be treated as a trusted authority over these operations. The applications remains responsible for enforcing boundaries.
+
+### Key Takeaways & Engineering Practices: Agents
+
+**When to use agents?**  
+
+Agents become useful when dynamic-decision-making provides real value.  
+Typical condition includes:
+
+- The required action vary depending on hte user's goal.
+- The next action depends on information discovered during execution.
+- Several capabilities may be relevant.
+- The number or order of actions cannot conveniently be hard-coded.
+- The system benefits from dynamically selecting capabilities.
+
+Example include:
+
+- Research assistants
+- Coding assistants
+- Complex customer-support systems
+- Systems coordinating multiple external capabilities
+
+**When not to use agents?**  
+
+Don't introduce an agent simply because an agent can solve the problem.  
+If the application knows `A → B → C` there may be a little reason to make the LLM decide whether B should happen after A.  
+
+A deterministic workflow is often preferable when:
+
+- the execution path is known
+- the sequence is stable
+- predictable behavior is important
+- latency needs to by tightly controlled
+- the task does not require dynamic tool selection
+
+For example the RAG workflow already has a known structure.  
+Turning it into an agent merely because retrieval is involved would not automatically improve it.
+
+A useful engineering question is "does the system actually need  the LLM to decide what happens next?". If the answer is no, a deterministic workflow may be sufficient.
+
+#### Common mistakes: Agents
+
+**Mistake 1 — "An agent is just an LLM with tools."**  
+  Tools alone do not define an agent. The important characteristic is the dynamic decision loop.  
+
+**Mistake 2 — "An agent must use multiple tools."**  
+  An agent can solve a request with a single tool or even decide that no tool is necessary.
+
+**Mistake 3 — "The agent must call every available tool."**  
+  The agent should stop once it has enough information to satisfy the goal.
+
+**Mistake 4 — "More tools make an agent more capable."**  
+  More capabilities can also create a larger and more difficult decision space.
+
+**Mistake 5 — "The LLM should perform the backend logic."**  
+  The LLM should select capabilities and provide structured arguments.  
+  Deterministic application code should perform deterministic operations.
+
+**Mistake 6 — "Tool order is arbitrary."**  
+  Tool order is often constrained by information dependencies.
+
+**Mistake 7 — "Tool descriptions are just documentation."**  
+  Tool descriptions are part of the interface presented to the LLM and can influence tool selection and argument generation.
+
+**Mistake 8 — "The agent has unrestricted application**  
+  The agent can only use capabilities exposed through its tool boundary and should remain subject to application-controlled permissions and validation.
+
+**Mistake 9 — "Every RAG system should become an agent."**  
+  A predictable RAG workflow does not require agentic execution.
+
+**Mistake 10 — "An agent is inherently better than a deterministic workflow."**  
+  The correct architecture depends on the problem.
+
+#### Key mental models: Agents
+
+**Deterministic workflow:**
+
+Application decides the path.  
+LLM performs language/reasoning within that path.  
+
+**Agent:**
+
+```text
+Application defines capabilities.
+        ↓
+LLM decides the next action.
+        ↓
+Runtime executes the action.
+        ↓
+Result becomes available.
+        ↓
+LLM decides again.
+        ↓
+Repeat until the goal is satisfied.
+```
+
+**Tool boundary:**
+
+```text
+LLM
+ ↓
+"What capability do I need?"
+ ↓
+Tool Interface
+ ↓
+Deterministic Application Code
+ ↓
+Database / API / System
+```
+
+**Information gap:**
+
+```text
+Current knowledge
+       ↓
+What is missing?
+       ↓
+Choose action
+       ↓
+New information
+       ↓
+Re-evaluate
+```
+
+**Core engineering principle:**  
+
+```text
+LLM
+  ↓
+Decision-making
+
+Application
+  ↓
+Deterministic operations
+
+Tools
+  ↓
+Controlled capability boundary
+```
+
+#### Personal observations: Agents
+
+The implementation led to several important conclusions.  
+
+The agent does not magically "know" the next tool. it reasons from the use's goal, the available tools, and the information currently available.
+
+Tool results are not merely outputs. They become new information that can influence subsequent decisions.
+
+Tool order is often determined by information dependencies. In the product example, `get_product_details()`  depends on the product ID produced by `search_product`.
+
+An agent should not blindly execute every available capability. It should stop when the available information is sufficient to satisfy the user goal.
+
+More parameters don't automatically create a better tool interface. Tool design is an API-design problem.
+
+A deterministic RAG pipeline should not become an agent simply because an LLM is involved.
+
+The agent's capabilities are ultimately constrained by the tools and permissions exposed by the application.
+
+The most important distinction from Lesson 9 is:  
+
+- RAG: the application defines the retrieval workflow.  
+
+- Agent: the application defines the capabilities, while the LLM participates in deciding the execution path.
